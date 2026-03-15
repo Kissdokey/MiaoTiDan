@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "秒提单 MiaoTiDan",
-  "version": "3.0.0",
+  "version": "3.2.0",
   "description": "Taobao/Tmall timed order submission — pick the submit button, set a precise trigger time, and auto-click at the exact moment.",
   "permissions": ["storage", "activeTab", "tabs", "scripting"],
   "host_permissions": [

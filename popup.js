@@ -103,10 +103,10 @@ function renderStatus(task) {
 
   if (!task || !task.armed) {
     const result = task?.lastResult || "";
-    if (result.includes("成功")) {
+    if (result.includes("成功") || result.includes("已发送") || result.includes("✅")) {
       statusText.textContent = `状态：${result}`;
       statusText.classList.add("done");
-    } else if (result.includes("失败") || result.includes("取消")) {
+    } else if (result.includes("失败") || result.includes("取消") || result.includes("超时") || result.includes("❌")) {
       statusText.textContent = `状态：${result}`;
       statusText.classList.add("error");
     } else {
