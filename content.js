@@ -1,30 +1,35 @@
 /**
- * MiaoTiDan Content Script
- * ========================
- * Runs in淘宝/天猫 pages. Handles:
+ * MiaoTiDan Content Script v2.1
+ * =============================
+ * Runs in 淘宝/天猫 pages. Handles:
  * 1. Element picker (visual selector)
  * 2. High-precision timed click (RAF-based tight loop)
+ * 3. Flash-sale mode: force-enable, auto-refresh, DOM mutation watch
  */
 
 const STORAGE_KEY = "autoSubmitTask";
 
 // ─── Timing Tuning ───
-const PHASE1_THRESHOLD_MS = 2000;   // 2s before: switch from setTimeout to setInterval(1ms)
-const PHASE2_THRESHOLD_MS = 100;    // 100ms before: enter RAF tight loop
-const MAX_CLICK_RETRY_MS = 10000;   // After trigger: retry for 10s if element not found
-const CLICK_RETRY_INTERVAL_MS = 50; // Retry interval during post-trigger
+const PHASE1_THRESHOLD_MS = 2000;
+const PHASE2_THRESHOLD_MS = 100;
+const MAX_CLICK_RETRY_MS = 10000;
+const CLICK_RETRY_INTERVAL_MS = 50;
 
 // ─── State ───
 let taskTimer = null;
 let taskInterval = null;
 let taskRaf = null;
-let cachedTarget = null;     // pre-queried DOM element
+let cachedTarget = null;
 let currentTask = null;
 let pickerEnabled = false;
 let hoverElement = null;
 let cleanupPicker = null;
+let domObserver = null;
+let domObserverClickDone = false;
 
-// ─── Selector persistence ───
+// ══════════════════════════════════════════
+// Selector persistence
+// ══════════════════════════════════════════
 async function savePickedSelector(selector, text) {
   const old = await chrome.storage.local.get(STORAGE_KEY);
   const task = old[STORAGE_KEY] || {};
@@ -40,7 +45,9 @@ async function savePickedSelector(selector, text) {
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
 }
 
-// ─── CSS Selector generator ───
+// ══════════════════════════════════════════
+// CSS Selector generator
+// ══════════════════════════════════════════
 function getElementCssSelector(element) {
   if (!(element instanceof Element)) return "";
   if (element.id) return `#${CSS.escape(element.id)}`;
@@ -70,9 +77,38 @@ function getElementCssSelector(element) {
   return path.join(" > ");
 }
 
-// ─── Synthetic click (full event sequence) ───
-function syntheticClick(element) {
-  // Scroll into view first
+// ══════════════════════════════════════════
+// Force-enable a disabled element
+// ══════════════════════════════════════════
+function forceEnableElement(el) {
+  if (!el) return;
+
+  // Remove common disabled patterns
+  el.removeAttribute("disabled");
+  el.removeAttribute("aria-disabled");
+  el.classList.remove("disabled", "btn-disabled", "is-disabled", "submit-btn-disabled");
+
+  // Fix pointer-events and opacity
+  el.style.pointerEvents = "auto";
+  el.style.opacity = "1";
+  el.style.cursor = "pointer";
+
+  // Also check parent (some frameworks wrap buttons)
+  const parent = el.parentElement;
+  if (parent) {
+    parent.style.pointerEvents = "auto";
+    parent.style.opacity = "1";
+  }
+}
+
+// ══════════════════════════════════════════
+// Synthetic click (full event sequence)
+// ══════════════════════════════════════════
+function syntheticClick(element, shouldForceEnable = false) {
+  if (shouldForceEnable) {
+    forceEnableElement(element);
+  }
+
   element.scrollIntoView({ block: "center", behavior: "instant" });
 
   const rect = element.getBoundingClientRect();
@@ -90,18 +126,18 @@ function syntheticClick(element) {
     buttons: 1,
   };
 
-  // Full pointer + mouse event sequence (mimics real user)
   element.dispatchEvent(new PointerEvent("pointerdown", { ...eventInit, pointerId: 1 }));
   element.dispatchEvent(new MouseEvent("mousedown", eventInit));
   element.dispatchEvent(new PointerEvent("pointerup", { ...eventInit, pointerId: 1 }));
   element.dispatchEvent(new MouseEvent("mouseup", eventInit));
   element.dispatchEvent(new MouseEvent("click", eventInit));
 
-  // Fallback: native click
   element.click();
 }
 
-// ─── Task result persistence ───
+// ══════════════════════════════════════════
+// Task result persistence
+// ══════════════════════════════════════════
 async function updateTaskResult(resultText, armed = false) {
   const old = await chrome.storage.local.get(STORAGE_KEY);
   const task = old[STORAGE_KEY] || {};
@@ -110,15 +146,18 @@ async function updateTaskResult(resultText, armed = false) {
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
 }
 
-// ─── Post-trigger click with retry ───
-async function executeClick(selector, source) {
+// ══════════════════════════════════════════
+// Post-trigger click with retry
+// ══════════════════════════════════════════
+async function executeClick(selector, source, flashSale) {
+  const forceEnable = flashSale?.enabled && flashSale?.forceEnable;
   const start = Date.now();
   let clicked = false;
 
   // First attempt: use cached element
   if (cachedTarget) {
     try {
-      syntheticClick(cachedTarget);
+      syntheticClick(cachedTarget, forceEnable);
       clicked = true;
     } catch (_) {
       cachedTarget = null;
@@ -128,6 +167,7 @@ async function executeClick(selector, source) {
   if (clicked) {
     const delay = Date.now() - start;
     await updateTaskResult(`✅ 点击成功（${source}，延迟 ${delay}ms）`, false);
+    stopDomObserver();
     return;
   }
 
@@ -135,7 +175,7 @@ async function executeClick(selector, source) {
   while (Date.now() - start <= MAX_CLICK_RETRY_MS) {
     const target = document.querySelector(selector);
     if (target) {
-      syntheticClick(target);
+      syntheticClick(target, forceEnable);
       clicked = true;
       break;
     }
@@ -148,22 +188,107 @@ async function executeClick(selector, source) {
   } else {
     await updateTaskResult("❌ 点击失败：未找到目标元素", false);
   }
+  stopDomObserver();
 }
 
-// ─── Clear all timers ───
+// ══════════════════════════════════════════
+// Clear all timers
+// ══════════════════════════════════════════
 function clearAllTimers() {
   if (taskTimer) { clearTimeout(taskTimer); taskTimer = null; }
   if (taskInterval) { clearInterval(taskInterval); taskInterval = null; }
   if (taskRaf) { cancelAnimationFrame(taskRaf); taskRaf = null; }
   cachedTarget = null;
   currentTask = null;
+  stopDomObserver();
 }
 
-// ─── High-precision scheduling ───
-// Strategy:
-//   Phase 0: delay > 2s    → setTimeout to Phase 1
-//   Phase 1: delay ≤ 2s    → setInterval(1ms) pre-caching element, waiting for Phase 2
-//   Phase 2: delay ≤ 100ms → RAF tight loop, fire as soon as Date.now() >= triggerAt
+// ══════════════════════════════════════════
+// DOM Mutation Observer (flash sale)
+// Watches for the target button appearing or becoming enabled
+// ══════════════════════════════════════════
+function stopDomObserver() {
+  if (domObserver) {
+    domObserver.disconnect();
+    domObserver = null;
+  }
+  domObserverClickDone = false;
+}
+
+function startDomObserver(task) {
+  stopDomObserver();
+  if (!task?.flashSale?.watchDom) return;
+  if (!task.selector) return;
+
+  domObserverClickDone = false;
+
+  const tryClickIfReady = () => {
+    if (domObserverClickDone) return;
+    // Only trigger after the scheduled time
+    if (Date.now() < task.triggerAt) return;
+
+    const el = document.querySelector(task.selector);
+    if (!el) return;
+
+    // Check if the element is now enabled
+    const isDisabled = el.disabled || el.getAttribute("aria-disabled") === "true" ||
+                       el.classList.contains("disabled") || el.classList.contains("btn-disabled");
+
+    if (!isDisabled || (task.flashSale?.forceEnable)) {
+      domObserverClickDone = true;
+      if (task.flashSale?.forceEnable) forceEnableElement(el);
+      syntheticClick(el, false);
+      void updateTaskResult("✅ 点击成功（DOM变化触发）", false);
+      stopDomObserver();
+    }
+  };
+
+  domObserver = new MutationObserver(() => {
+    tryClickIfReady();
+  });
+
+  domObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["disabled", "class", "style", "aria-disabled"],
+  });
+}
+
+// ══════════════════════════════════════════
+// Auto-refresh page strategy (flash sale)
+// ══════════════════════════════════════════
+function scheduleAutoRefresh(task) {
+  if (!task?.flashSale?.autoRefresh) return;
+
+  const advanceMs = task.flashSale.refreshAdvanceMs || 500;
+  const refreshAt = task.triggerAt - advanceMs;
+  const delay = refreshAt - Date.now();
+
+  if (delay <= 0) {
+    // Already past refresh time — just go straight to click
+    return;
+  }
+
+  // Schedule a page reload just before trigger time.
+  // After reload, bootTaskOnPageLoad() will fire and immediately execute click.
+  const refreshTimer = setTimeout(() => {
+    // Mark that we should click immediately on next page load
+    // (the boot logic handles delay <= 0 as immediate click)
+    window.location.reload();
+  }, delay);
+
+  // Store timer so we can cancel if needed
+  const originalClear = clearAllTimers;
+  clearAllTimers = function () {
+    clearTimeout(refreshTimer);
+    originalClear();
+  };
+}
+
+// ══════════════════════════════════════════
+// High-precision scheduling (3-phase)
+// ══════════════════════════════════════════
 function scheduleTask(task) {
   clearAllTimers();
   if (!task || !task.armed || !task.selector || !task.triggerAt) return;
@@ -172,10 +297,22 @@ function scheduleTask(task) {
   const now = Date.now();
   const delay = task.triggerAt - now;
 
+  // Flash sale mode: start DOM observer early
+  if (task.flashSale?.enabled && task.flashSale?.watchDom) {
+    startDomObserver(task);
+  }
+
   if (delay <= 0) {
-    // Already past trigger time
-    void executeClick(task.selector, "超时补触发");
+    void executeClick(task.selector, "超时补触发", task.flashSale);
     return;
+  }
+
+  // Flash sale: schedule auto-refresh if enabled
+  if (task.flashSale?.enabled && task.flashSale?.autoRefresh) {
+    scheduleAutoRefresh(task);
+    // If auto-refresh will trigger before our click time,
+    // still set up the normal schedule as fallback
+    // (in case refresh is faster than expected)
   }
 
   if (delay <= PHASE2_THRESHOLD_MS) {
@@ -195,16 +332,21 @@ function scheduleTask(task) {
 }
 
 function enterPhase1(task) {
-  // Pre-cache the target element
   cachedTarget = document.querySelector(task.selector);
 
-  // Fine-grained polling at ~1ms
+  // Force-enable during cache if flash sale
+  if (cachedTarget && task.flashSale?.enabled && task.flashSale?.forceEnable) {
+    forceEnableElement(cachedTarget);
+  }
+
   taskInterval = setInterval(() => {
     const remaining = task.triggerAt - Date.now();
 
-    // Keep refreshing cached element
     if (!cachedTarget) {
       cachedTarget = document.querySelector(task.selector);
+      if (cachedTarget && task.flashSale?.enabled && task.flashSale?.forceEnable) {
+        forceEnableElement(cachedTarget);
+      }
     }
 
     if (remaining <= PHASE2_THRESHOLD_MS) {
@@ -216,16 +358,17 @@ function enterPhase1(task) {
 }
 
 function enterPhase2(task) {
-  // Final cache attempt
   if (!cachedTarget) {
     cachedTarget = document.querySelector(task.selector);
   }
+  if (cachedTarget && task.flashSale?.enabled && task.flashSale?.forceEnable) {
+    forceEnableElement(cachedTarget);
+  }
 
-  // RAF tight loop — fires every ~16ms (or faster with high-refresh monitors)
   const tick = () => {
     if (Date.now() >= task.triggerAt) {
       taskRaf = null;
-      void executeClick(task.selector, "定时触发");
+      void executeClick(task.selector, "定时触发", task.flashSale);
       return;
     }
     taskRaf = requestAnimationFrame(tick);
@@ -233,7 +376,9 @@ function enterPhase2(task) {
   taskRaf = requestAnimationFrame(tick);
 }
 
-// ─── Element Picker ───
+// ══════════════════════════════════════════
+// Element Picker
+// ══════════════════════════════════════════
 function disablePicker() {
   if (!pickerEnabled) return;
   pickerEnabled = false;
@@ -294,7 +439,9 @@ function enablePicker() {
   };
 }
 
-// ─── Message handler ───
+// ══════════════════════════════════════════
+// Message handler
+// ══════════════════════════════════════════
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) return;
 
@@ -318,12 +465,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "RUN_NOW") {
-    void executeClick(message.payload.selector, "手动测试");
+    void executeClick(message.payload.selector, "手动测试", message.payload.flashSale);
     sendResponse({ ok: true });
   }
 });
 
-// ─── Storage change listener ───
+// ══════════════════════════════════════════
+// Storage change listener
+// ══════════════════════════════════════════
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (!changes[STORAGE_KEY]) return;
@@ -333,7 +482,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
-// ─── Boot: restore task on page load ───
+// ══════════════════════════════════════════
+// Boot: restore task on page load
+// ══════════════════════════════════════════
 async function bootTaskOnPageLoad() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const task = result[STORAGE_KEY];

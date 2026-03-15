@@ -18,6 +18,15 @@ const cdMS = document.getElementById("cdMS");
 const countdownStatus = document.getElementById("countdownStatus");
 const currentTimeEl = document.getElementById("currentTime");
 
+// Flash sale mode elements
+const flashModeCheck = document.getElementById("flashModeCheck");
+const flashOptions = document.getElementById("flashOptions");
+const forceEnableCheck = document.getElementById("forceEnableCheck");
+const autoRefreshCheck = document.getElementById("autoRefreshCheck");
+const refreshAdvanceInput = document.getElementById("refreshAdvanceInput");
+const refreshAdvanceRow = document.getElementById("refreshAdvanceRow");
+const watchDomCheck = document.getElementById("watchDomCheck");
+
 // ─── Flatpickr setup ───
 let fp = null;
 function initFlatpickr() {
@@ -30,9 +39,6 @@ function initFlatpickr() {
     theme: "dark",
     allowInput: true,
     disableMobile: true,
-    onChange(selectedDates) {
-      // sync milliseconds from msInput
-    }
   });
 }
 
@@ -57,7 +63,36 @@ function setPickerFromTimestamp(ts) {
   msInput.value = d.getMilliseconds();
 }
 
+function getFlashSaleConfig() {
+  return {
+    enabled: flashModeCheck.checked,
+    forceEnable: forceEnableCheck.checked,
+    autoRefresh: autoRefreshCheck.checked,
+    refreshAdvanceMs: parseInt(refreshAdvanceInput.value, 10) || 500,
+    watchDom: watchDomCheck.checked,
+  };
+}
+
+function setFlashSaleConfig(cfg) {
+  if (!cfg) return;
+  flashModeCheck.checked = !!cfg.enabled;
+  forceEnableCheck.checked = cfg.forceEnable !== false;
+  autoRefreshCheck.checked = cfg.autoRefresh !== false;
+  refreshAdvanceInput.value = cfg.refreshAdvanceMs || 500;
+  watchDomCheck.checked = cfg.watchDom !== false;
+  toggleFlashOptions();
+}
+
 const pad = (n, size = 2) => String(n).padStart(size, "0");
+
+// ─── Flash sale UI toggle ───
+function toggleFlashOptions() {
+  flashOptions.style.display = flashModeCheck.checked ? "" : "none";
+  refreshAdvanceRow.style.display = autoRefreshCheck.checked ? "" : "none";
+}
+
+flashModeCheck.addEventListener("change", toggleFlashOptions);
+autoRefreshCheck.addEventListener("change", toggleFlashOptions);
 
 // ─── Status rendering ───
 function renderStatus(task) {
@@ -80,7 +115,8 @@ function renderStatus(task) {
 
   const triggerAt = new Date(task.triggerAt);
   const timeStr = `${triggerAt.toLocaleDateString()} ${pad(triggerAt.getHours())}:${pad(triggerAt.getMinutes())}:${pad(triggerAt.getSeconds())}.${pad(triggerAt.getMilliseconds(), 3)}`;
-  statusText.textContent = `状态：已启动 → ${timeStr}`;
+  const modeTag = task.flashSale?.enabled ? " [抢购模式]" : "";
+  statusText.textContent = `状态：已启动${modeTag} → ${timeStr}`;
   statusText.classList.add("armed");
 }
 
@@ -122,8 +158,8 @@ function tickCountdown() {
     cdMS.textContent = "000";
     countdownCard.classList.add("expired");
     countdownCard.classList.remove("armed");
-    countdownStatus.textContent = "⚡ 已到达目标时间，正在执行点击...";
-    return; // stop
+    countdownStatus.textContent = "⚡ 已到达目标时间，正在执行...";
+    return;
   }
 
   const h = Math.floor(diff / 3600000);
@@ -143,12 +179,11 @@ function tickCountdown() {
 }
 
 // ─── Current time display ───
-let currentTimeRaf = null;
 function tickCurrentTime() {
   const now = new Date();
   currentTimeEl.textContent =
     `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
-  currentTimeRaf = requestAnimationFrame(tickCurrentTime);
+  requestAnimationFrame(tickCurrentTime);
 }
 tickCurrentTime();
 
@@ -160,6 +195,7 @@ async function loadTask() {
 
   selectorInput.value = task.selector || "";
   setPickerFromTimestamp(task.triggerAt);
+  setFlashSaleConfig(task.flashSale);
   if (task.selector) {
     const textPart = task.pickedText ? `（${task.pickedText}）` : "";
     pickedHint.textContent = `已选择：${task.selector}${textPart}`;
@@ -189,11 +225,14 @@ async function saveAndArmTask() {
     return;
   }
 
+  const flashSale = getFlashSaleConfig();
+
   const task = {
     selector,
     triggerAt,
     armed: true,
-    lastResult: ""
+    lastResult: "",
+    flashSale,
   };
 
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
@@ -266,7 +305,7 @@ async function runTestClickNow() {
   if (!tab?.id) return;
   await chrome.tabs.sendMessage(tab.id, {
     type: "RUN_NOW",
-    payload: { selector }
+    payload: { selector, flashSale: getFlashSaleConfig() }
   }).catch(() => {
     alert("执行失败，请确认当前页面属于淘宝/天猫订单页。");
   });
@@ -286,7 +325,7 @@ chrome.runtime.onMessage.addListener((message) => {
   pickedHint.textContent = `✅ 已选择：${message.payload.selector}${textPart}`;
 });
 
-// Listen for storage changes (e.g. from content script writing results)
+// Listen for storage changes
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes[STORAGE_KEY]) return;
   const task = changes[STORAGE_KEY].newValue;
@@ -297,9 +336,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     const textPart = task.pickedText ? `（${task.pickedText}）` : "";
     pickedHint.textContent = `已选择：${task.selector}${textPart}`;
   }
+  setFlashSaleConfig(task.flashSale);
   renderStatus(task);
 
-  // Update countdown state
   if (task.armed && task.triggerAt > Date.now()) {
     startCountdown(task.triggerAt);
   } else {

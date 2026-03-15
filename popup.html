@@ -67,6 +67,45 @@
         </div>
       </section>
 
+      <!-- Flash Sale Mode -->
+      <section class="card">
+        <label class="label">
+          <span class="label-icon">🔥</span>
+          抢购模式
+        </label>
+        <p class="hint" style="margin:0 0 8px;color:var(--text-secondary)">
+          适用于定时开售场景：按钮在开售前处于禁用/不可点击状态
+        </p>
+        <div class="toggle-group">
+          <label class="toggle-item">
+            <input type="checkbox" id="flashModeCheck" />
+            <span class="toggle-label">启用抢购模式</span>
+          </label>
+        </div>
+        <div id="flashOptions" class="flash-options" style="display:none">
+          <label class="toggle-item">
+            <input type="checkbox" id="forceEnableCheck" checked />
+            <span class="toggle-label">强制解锁按钮</span>
+            <span class="toggle-desc">到点时移除 disabled 属性和禁用样式</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="autoRefreshCheck" checked />
+            <span class="toggle-label">自动刷新页面</span>
+            <span class="toggle-desc">到点前自动刷新，刷新后立即点击</span>
+          </label>
+          <div class="ms-row" id="refreshAdvanceRow">
+            <label class="ms-label">提前刷新</label>
+            <input id="refreshAdvanceInput" type="number" min="0" max="5000" step="100" value="500" placeholder="ms" />
+            <span class="ms-label">毫秒</span>
+          </div>
+          <label class="toggle-item">
+            <input type="checkbox" id="watchDomCheck" checked />
+            <span class="toggle-label">DOM 变化监听</span>
+            <span class="toggle-desc">持续监听按钮出现/启用，第一时间触发点击</span>
+          </label>
+        </div>
+      </section>
+
       <!-- Actions -->
       <section class="card">
         <div class="row">
