@@ -3,38 +3,92 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Taobao Auto Submit</title>
+    <title>秒提单 MiaoTiDan</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="app">
-      <h1>淘宝自动提交</h1>
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <span class="logo-icon">⚡</span>
+          <span class="logo-text">秒提单</span>
+        </div>
+        <span class="version">v2.0</span>
+      </header>
 
+      <!-- Countdown -->
+      <section class="card countdown-card" id="countdownCard" style="display:none">
+        <div class="countdown-label">距离提交还剩</div>
+        <div class="countdown-timer" id="countdownTimer">
+          <span class="cd-block"><span class="cd-num" id="cdH">00</span><span class="cd-unit">时</span></span>
+          <span class="cd-sep">:</span>
+          <span class="cd-block"><span class="cd-num" id="cdM">00</span><span class="cd-unit">分</span></span>
+          <span class="cd-sep">:</span>
+          <span class="cd-block"><span class="cd-num" id="cdS">00</span><span class="cd-unit">秒</span></span>
+          <span class="cd-sep">.</span>
+          <span class="cd-block"><span class="cd-num cd-ms" id="cdMS">000</span><span class="cd-unit">毫秒</span></span>
+        </div>
+        <div class="countdown-status" id="countdownStatus"></div>
+      </section>
+
+      <!-- Selector -->
       <section class="card">
-        <label class="label">提交按钮选择器</label>
-        <textarea id="selectorInput" rows="3" placeholder="例如：#submitOrderPC_1"></textarea>
+        <label class="label">
+          <span class="label-icon">🎯</span>
+          提交按钮选择器
+        </label>
+        <textarea id="selectorInput" rows="2" placeholder="点击下方按钮可视化选择，或手动输入 CSS 选择器"></textarea>
         <div class="row">
-          <button id="pickBtn" type="button">在页面中选择按钮</button>
-          <button id="testBtn" type="button">立即测试点击</button>
+          <button id="pickBtn" type="button" class="btn btn-outline">
+            <span class="btn-icon">👆</span> 选择按钮
+          </button>
+          <button id="testBtn" type="button" class="btn btn-outline">
+            <span class="btn-icon">🧪</span> 测试点击
+          </button>
         </div>
         <p id="pickedHint" class="hint"></p>
       </section>
 
+      <!-- Time -->
       <section class="card">
-        <label class="label" for="timeInput">提交时间（本地时间）</label>
-        <input id="timeInput" type="datetime-local" step="0.001" />
+        <label class="label">
+          <span class="label-icon">⏱️</span>
+          提交时间
+        </label>
+        <div class="time-picker-wrap">
+          <input id="timeInput" type="text" placeholder="点击选择日期和时间" autocomplete="off" />
+          <div class="ms-row">
+            <label class="ms-label">毫秒微调</label>
+            <input id="msInput" type="number" min="0" max="999" step="1" value="0" placeholder="0-999" />
+          </div>
+        </div>
       </section>
 
+      <!-- Actions -->
       <section class="card">
         <div class="row">
-          <button id="armBtn" type="button" class="primary">启动定时任务</button>
-          <button id="cancelBtn" type="button">取消任务</button>
+          <button id="armBtn" type="button" class="btn btn-primary btn-glow">
+            <span class="btn-icon">🚀</span> 启动定时
+          </button>
+          <button id="cancelBtn" type="button" class="btn btn-danger">
+            <span class="btn-icon">⛔</span> 取消任务
+          </button>
         </div>
         <p id="statusText" class="status">状态：未启动</p>
       </section>
+
+      <!-- Current Time -->
+      <footer class="footer">
+        <span class="current-time-label">本机时间</span>
+        <span class="current-time" id="currentTime">--:--:--.---</span>
+      </footer>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
-
