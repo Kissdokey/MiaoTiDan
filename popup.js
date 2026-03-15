@@ -22,10 +22,11 @@ const currentTimeEl = document.getElementById("currentTime");
 const flashModeCheck = document.getElementById("flashModeCheck");
 const flashOptions = document.getElementById("flashOptions");
 const forceEnableCheck = document.getElementById("forceEnableCheck");
-const autoRefreshCheck = document.getElementById("autoRefreshCheck");
-const refreshAdvanceInput = document.getElementById("refreshAdvanceInput");
-const refreshAdvanceRow = document.getElementById("refreshAdvanceRow");
+const togglePaymentCheck = document.getElementById("togglePaymentCheck");
 const watchDomCheck = document.getElementById("watchDomCheck");
+const paymentSelectorInput = document.getElementById("paymentSelectorInput");
+const pickPaymentBtn = document.getElementById("pickPaymentBtn");
+const paymentPickedHint = document.getElementById("paymentPickedHint");
 
 // ─── Flatpickr setup ───
 let fp = null;
@@ -67,9 +68,9 @@ function getFlashSaleConfig() {
   return {
     enabled: flashModeCheck.checked,
     forceEnable: forceEnableCheck.checked,
-    autoRefresh: autoRefreshCheck.checked,
-    refreshAdvanceMs: parseInt(refreshAdvanceInput.value, 10) || 500,
+    togglePayment: togglePaymentCheck.checked,
     watchDom: watchDomCheck.checked,
+    paymentSelector: paymentSelectorInput.value.trim(),
   };
 }
 
@@ -77,9 +78,12 @@ function setFlashSaleConfig(cfg) {
   if (!cfg) return;
   flashModeCheck.checked = !!cfg.enabled;
   forceEnableCheck.checked = cfg.forceEnable !== false;
-  autoRefreshCheck.checked = cfg.autoRefresh !== false;
-  refreshAdvanceInput.value = cfg.refreshAdvanceMs || 500;
+  togglePaymentCheck.checked = cfg.togglePayment !== false;
   watchDomCheck.checked = cfg.watchDom !== false;
+  paymentSelectorInput.value = cfg.paymentSelector || "";
+  if (cfg.paymentPickedText) {
+    paymentPickedHint.textContent = `已选择：${cfg.paymentSelector}（${cfg.paymentPickedText}）`;
+  }
   toggleFlashOptions();
 }
 
@@ -88,11 +92,9 @@ const pad = (n, size = 2) => String(n).padStart(size, "0");
 // ─── Flash sale UI toggle ───
 function toggleFlashOptions() {
   flashOptions.style.display = flashModeCheck.checked ? "" : "none";
-  refreshAdvanceRow.style.display = autoRefreshCheck.checked ? "" : "none";
 }
 
 flashModeCheck.addEventListener("change", toggleFlashOptions);
-autoRefreshCheck.addEventListener("change", toggleFlashOptions);
 
 // ─── Status rendering ───
 function renderStatus(task) {
@@ -227,6 +229,12 @@ async function saveAndArmTask() {
 
   const flashSale = getFlashSaleConfig();
 
+  // Validate flash sale config
+  if (flashSale.enabled && flashSale.togglePayment && !flashSale.paymentSelector) {
+    alert("抢购模式已启用「切换支付方式刷新」，请先选择支付宝复选框元素。");
+    return;
+  }
+
   const task = {
     selector,
     triggerAt,
@@ -260,7 +268,7 @@ async function cancelTask() {
   await chrome.tabs.sendMessage(tab.id, { type: "CANCEL_TASK" }).catch(() => {});
 }
 
-// ─── Pick selector ───
+// ─── Pick submit button selector ───
 async function requestPickSelector() {
   const tab = await getActiveTab();
   if (!tab?.id) {
@@ -268,7 +276,7 @@ async function requestPickSelector() {
     return;
   }
 
-  const sendStartPicker = () => chrome.tabs.sendMessage(tab.id, { type: "START_PICKER" });
+  const sendStartPicker = () => chrome.tabs.sendMessage(tab.id, { type: "START_PICKER", payload: { target: "submit" } });
   const canInject = /^https?:\/\/.+\.(taobao|tmall)\.com\//i.test(tab.url || "");
 
   const started = await sendStartPicker().then(() => true).catch(async () => {
@@ -294,6 +302,40 @@ async function requestPickSelector() {
   }
 }
 
+// ─── Pick payment checkbox selector ───
+async function requestPickPaymentSelector() {
+  const tab = await getActiveTab();
+  if (!tab?.id) {
+    alert("无法获取当前标签页。");
+    return;
+  }
+
+  const sendStartPicker = () => chrome.tabs.sendMessage(tab.id, { type: "START_PICKER", payload: { target: "payment" } });
+  const canInject = /^https?:\/\/.+\.(taobao|tmall)\.com\//i.test(tab.url || "");
+
+  const started = await sendStartPicker().then(() => true).catch(async () => {
+    if (!canInject) throw new Error("NOT_TAOBAO_PAGE");
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"]
+    });
+    await sendStartPicker();
+    return true;
+  }).catch((error) => {
+    if (error?.message === "NOT_TAOBAO_PAGE") {
+      alert("当前页面不是淘宝/天猫页面，请切到订单页后再试。");
+      return false;
+    }
+    alert("脚本注入失败，请刷新订单页后重试。");
+    return false;
+  });
+
+  if (started) {
+    paymentPickedHint.textContent = '🔍 已进入选择模式：请点击页面上的「支付宝」复选框或其所在区域';
+  }
+}
+
 // ─── Test click ───
 async function runTestClickNow() {
   const selector = selectorInput.value.trim();
@@ -316,13 +358,21 @@ pickBtn.addEventListener("click", requestPickSelector);
 armBtn.addEventListener("click", saveAndArmTask);
 cancelBtn.addEventListener("click", cancelTask);
 testBtn.addEventListener("click", runTestClickNow);
+pickPaymentBtn.addEventListener("click", requestPickPaymentSelector);
 
 // Listen for selector picked from content script
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type !== "SELECTOR_PICKED") return;
-  selectorInput.value = message.payload.selector || "";
-  const textPart = message.payload.text ? `（${message.payload.text}）` : "";
-  pickedHint.textContent = `✅ 已选择：${message.payload.selector}${textPart}`;
+  if (message?.type === "SELECTOR_PICKED") {
+    const { selector, text, target } = message.payload;
+    if (target === "payment") {
+      paymentSelectorInput.value = selector;
+      paymentPickedHint.textContent = `✅ 已选择：${selector}（${text || ""}）`;
+    } else {
+      selectorInput.value = selector;
+      const textPart = text ? `（${text}）` : "";
+      pickedHint.textContent = `✅ 已选择：${selector}${textPart}`;
+    }
+  }
 });
 
 // Listen for storage changes

@@ -16,7 +16,7 @@
           <span class="logo-icon">⚡</span>
           <span class="logo-text">秒提单</span>
         </div>
-        <span class="version">v2.0</span>
+        <span class="version">v3.0</span>
       </header>
 
       <!-- Countdown -->
@@ -74,7 +74,7 @@
           抢购模式
         </label>
         <p class="hint" style="margin:0 0 8px;color:var(--text-secondary)">
-          适用于定时开售场景：按钮在开售前处于禁用/不可点击状态
+          适用于定时开售场景：到点前按钮不可点击，需要切换支付方式刷新按钮状态
         </p>
         <div class="toggle-group">
           <label class="toggle-item">
@@ -83,25 +83,38 @@
           </label>
         </div>
         <div id="flashOptions" class="flash-options" style="display:none">
+          <!-- Payment toggle selector -->
+          <div class="sub-section">
+            <label class="label" style="margin-bottom:4px">
+              <span class="label-icon">💳</span>
+              支付方式复选框
+            </label>
+            <textarea id="paymentSelectorInput" rows="2" placeholder="点击下方按钮选择「支付宝」复选框元素"></textarea>
+            <div class="row" style="margin-top:6px">
+              <button id="pickPaymentBtn" type="button" class="btn btn-outline btn-sm">
+                <span class="btn-icon">👆</span> 选择支付复选框
+              </button>
+            </div>
+            <p id="paymentPickedHint" class="hint"></p>
+          </div>
+
+          <div class="option-divider"></div>
+
+          <!-- Strategy options -->
+          <label class="toggle-item">
+            <input type="checkbox" id="togglePaymentCheck" checked />
+            <span class="toggle-label">切换支付方式刷新</span>
+            <span class="toggle-desc">到点时取消勾选→重新勾选支付宝，触发局部刷新（仅一次来回，避免人机检测）</span>
+          </label>
           <label class="toggle-item">
             <input type="checkbox" id="forceEnableCheck" checked />
             <span class="toggle-label">强制解锁按钮</span>
-            <span class="toggle-desc">到点时移除 disabled 属性和禁用样式</span>
+            <span class="toggle-desc">同时移除提交按钮的 disabled 属性</span>
           </label>
-          <label class="toggle-item">
-            <input type="checkbox" id="autoRefreshCheck" checked />
-            <span class="toggle-label">自动刷新页面</span>
-            <span class="toggle-desc">到点前自动刷新，刷新后立即点击</span>
-          </label>
-          <div class="ms-row" id="refreshAdvanceRow">
-            <label class="ms-label">提前刷新</label>
-            <input id="refreshAdvanceInput" type="number" min="0" max="5000" step="100" value="500" placeholder="ms" />
-            <span class="ms-label">毫秒</span>
-          </div>
           <label class="toggle-item">
             <input type="checkbox" id="watchDomCheck" checked />
-            <span class="toggle-label">DOM 变化监听</span>
-            <span class="toggle-desc">持续监听按钮出现/启用，第一时间触发点击</span>
+            <span class="toggle-label">按钮状态监听</span>
+            <span class="toggle-desc">切换支付后持续监控提交按钮，状态一变立即点击</span>
           </label>
         </div>
       </section>
