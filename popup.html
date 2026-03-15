@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Taobao Auto Submit</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>淘宝自动提交</h1>
+
+      <section class="card">
+        <label class="label">提交按钮选择器</label>
+        <textarea id="selectorInput" rows="3" placeholder="例如：#submitOrderPC_1"></textarea>
+        <div class="row">
+          <button id="pickBtn" type="button">在页面中选择按钮</button>
+          <button id="testBtn" type="button">立即测试点击</button>
+        </div>
+        <p id="pickedHint" class="hint"></p>
+      </section>
+
+      <section class="card">
+        <label class="label" for="timeInput">提交时间（本地时间）</label>
+        <input id="timeInput" type="datetime-local" step="0.001" />
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <button id="armBtn" type="button" class="primary">启动定时任务</button>
+          <button id="cancelBtn" type="button">取消任务</button>
+        </div>
+        <p id="statusText" class="status">状态：未启动</p>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
+
