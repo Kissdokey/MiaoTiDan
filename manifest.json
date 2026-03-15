@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Taobao Auto Submit",
+  "version": "1.0.0",
+  "description": "Set target time and submit button selector, then auto-click at the expected time.",
+  "permissions": ["storage", "activeTab", "tabs", "scripting"],
+  "host_permissions": [
+    "*://*.taobao.com/*",
+    "*://*.tmall.com/*"
+  ],
+  "action": {
+    "default_title": "Taobao Auto Submit",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.taobao.com/*",
+        "*://*.tmall.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+
