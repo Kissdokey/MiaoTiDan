@@ -1,12 +1,30 @@
-const STORAGE_KEY = "autoSubmitTask";
-const MAX_CLICK_RETRY_MS = 10000;
-const CLICK_RETRY_INTERVAL_MS = 200;
+/**
+ * MiaoTiDan Content Script
+ * ========================
+ * Runs in淘宝/天猫 pages. Handles:
+ * 1. Element picker (visual selector)
+ * 2. High-precision timed click (RAF-based tight loop)
+ */
 
+const STORAGE_KEY = "autoSubmitTask";
+
+// ─── Timing Tuning ───
+const PHASE1_THRESHOLD_MS = 2000;   // 2s before: switch from setTimeout to setInterval(1ms)
+const PHASE2_THRESHOLD_MS = 100;    // 100ms before: enter RAF tight loop
+const MAX_CLICK_RETRY_MS = 10000;   // After trigger: retry for 10s if element not found
+const CLICK_RETRY_INTERVAL_MS = 50; // Retry interval during post-trigger
+
+// ─── State ───
 let taskTimer = null;
+let taskInterval = null;
+let taskRaf = null;
+let cachedTarget = null;     // pre-queried DOM element
+let currentTask = null;
 let pickerEnabled = false;
 let hoverElement = null;
 let cleanupPicker = null;
 
+// ─── Selector persistence ───
 async function savePickedSelector(selector, text) {
   const old = await chrome.storage.local.get(STORAGE_KEY);
   const task = old[STORAGE_KEY] || {};
@@ -14,7 +32,6 @@ async function savePickedSelector(selector, text) {
   task.pickedText = text || "";
   task.pickedAt = Date.now();
 
-  // Avoid accidental auto-submit with outdated schedule after a new target is picked.
   if (task.armed) {
     task.armed = false;
     task.lastResult = "已重新选择按钮，请重新启动定时任务";
@@ -23,6 +40,7 @@ async function savePickedSelector(selector, text) {
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
 }
 
+// ─── CSS Selector generator ───
 function getElementCssSelector(element) {
   if (!(element instanceof Element)) return "";
   if (element.id) return `#${CSS.escape(element.id)}`;
@@ -52,20 +70,38 @@ function getElementCssSelector(element) {
   return path.join(" > ");
 }
 
+// ─── Synthetic click (full event sequence) ───
 function syntheticClick(element) {
-  const events = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
-  for (const name of events) {
-    element.dispatchEvent(
-      new MouseEvent(name, {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      })
-    );
-  }
+  // Scroll into view first
+  element.scrollIntoView({ block: "center", behavior: "instant" });
+
+  const rect = element.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const eventInit = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    clientX: cx,
+    clientY: cy,
+    screenX: cx + window.screenX,
+    screenY: cy + window.screenY,
+    button: 0,
+    buttons: 1,
+  };
+
+  // Full pointer + mouse event sequence (mimics real user)
+  element.dispatchEvent(new PointerEvent("pointerdown", { ...eventInit, pointerId: 1 }));
+  element.dispatchEvent(new MouseEvent("mousedown", eventInit));
+  element.dispatchEvent(new PointerEvent("pointerup", { ...eventInit, pointerId: 1 }));
+  element.dispatchEvent(new MouseEvent("mouseup", eventInit));
+  element.dispatchEvent(new MouseEvent("click", eventInit));
+
+  // Fallback: native click
   element.click();
 }
 
+// ─── Task result persistence ───
 async function updateTaskResult(resultText, armed = false) {
   const old = await chrome.storage.local.get(STORAGE_KEY);
   const task = old[STORAGE_KEY] || {};
@@ -74,10 +110,28 @@ async function updateTaskResult(resultText, armed = false) {
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
 }
 
-async function tryClickWithRetry(selector, source) {
+// ─── Post-trigger click with retry ───
+async function executeClick(selector, source) {
   const start = Date.now();
   let clicked = false;
 
+  // First attempt: use cached element
+  if (cachedTarget) {
+    try {
+      syntheticClick(cachedTarget);
+      clicked = true;
+    } catch (_) {
+      cachedTarget = null;
+    }
+  }
+
+  if (clicked) {
+    const delay = Date.now() - start;
+    await updateTaskResult(`✅ 点击成功（${source}，延迟 ${delay}ms）`, false);
+    return;
+  }
+
+  // Retry loop
   while (Date.now() - start <= MAX_CLICK_RETRY_MS) {
     const target = document.querySelector(selector);
     if (target) {
@@ -89,33 +143,97 @@ async function tryClickWithRetry(selector, source) {
   }
 
   if (clicked) {
-    await updateTaskResult(`点击成功（${source}）`, false);
+    const delay = Date.now() - start;
+    await updateTaskResult(`✅ 点击成功（${source}，延迟 ${delay}ms）`, false);
   } else {
-    await updateTaskResult("点击失败：未找到目标元素", false);
+    await updateTaskResult("❌ 点击失败：未找到目标元素", false);
   }
 }
 
-function clearTaskTimer() {
-  if (!taskTimer) return;
-  clearTimeout(taskTimer);
-  taskTimer = null;
+// ─── Clear all timers ───
+function clearAllTimers() {
+  if (taskTimer) { clearTimeout(taskTimer); taskTimer = null; }
+  if (taskInterval) { clearInterval(taskInterval); taskInterval = null; }
+  if (taskRaf) { cancelAnimationFrame(taskRaf); taskRaf = null; }
+  cachedTarget = null;
+  currentTask = null;
 }
 
+// ─── High-precision scheduling ───
+// Strategy:
+//   Phase 0: delay > 2s    → setTimeout to Phase 1
+//   Phase 1: delay ≤ 2s    → setInterval(1ms) pre-caching element, waiting for Phase 2
+//   Phase 2: delay ≤ 100ms → RAF tight loop, fire as soon as Date.now() >= triggerAt
 function scheduleTask(task) {
-  clearTaskTimer();
-  if (!task || !task.armed) return;
+  clearAllTimers();
+  if (!task || !task.armed || !task.selector || !task.triggerAt) return;
 
-  const delay = task.triggerAt - Date.now();
+  currentTask = task;
+  const now = Date.now();
+  const delay = task.triggerAt - now;
+
   if (delay <= 0) {
-    void tryClickWithRetry(task.selector, "超时补触发");
+    // Already past trigger time
+    void executeClick(task.selector, "超时补触发");
     return;
   }
 
+  if (delay <= PHASE2_THRESHOLD_MS) {
+    enterPhase2(task);
+    return;
+  }
+
+  if (delay <= PHASE1_THRESHOLD_MS) {
+    enterPhase1(task);
+    return;
+  }
+
+  // Phase 0: coarse wait
   taskTimer = setTimeout(() => {
-    void tryClickWithRetry(task.selector, "定时触发");
-  }, delay);
+    enterPhase1(task);
+  }, delay - PHASE1_THRESHOLD_MS);
 }
 
+function enterPhase1(task) {
+  // Pre-cache the target element
+  cachedTarget = document.querySelector(task.selector);
+
+  // Fine-grained polling at ~1ms
+  taskInterval = setInterval(() => {
+    const remaining = task.triggerAt - Date.now();
+
+    // Keep refreshing cached element
+    if (!cachedTarget) {
+      cachedTarget = document.querySelector(task.selector);
+    }
+
+    if (remaining <= PHASE2_THRESHOLD_MS) {
+      clearInterval(taskInterval);
+      taskInterval = null;
+      enterPhase2(task);
+    }
+  }, 1);
+}
+
+function enterPhase2(task) {
+  // Final cache attempt
+  if (!cachedTarget) {
+    cachedTarget = document.querySelector(task.selector);
+  }
+
+  // RAF tight loop — fires every ~16ms (or faster with high-refresh monitors)
+  const tick = () => {
+    if (Date.now() >= task.triggerAt) {
+      taskRaf = null;
+      void executeClick(task.selector, "定时触发");
+      return;
+    }
+    taskRaf = requestAnimationFrame(tick);
+  };
+  taskRaf = requestAnimationFrame(tick);
+}
+
+// ─── Element Picker ───
 function disablePicker() {
   if (!pickerEnabled) return;
   pickerEnabled = false;
@@ -123,6 +241,7 @@ function disablePicker() {
   cleanupPicker = null;
   if (hoverElement) {
     hoverElement.style.outline = "";
+    hoverElement.style.outlineOffset = "";
     hoverElement = null;
   }
 }
@@ -138,9 +257,11 @@ function enablePicker() {
 
     if (hoverElement && hoverElement !== target) {
       hoverElement.style.outline = "";
+      hoverElement.style.outlineOffset = "";
     }
     hoverElement = target;
-    hoverElement.style.outline = "2px solid #ff5000";
+    hoverElement.style.outline = "2px solid #00d4ff";
+    hoverElement.style.outlineOffset = "2px";
   };
 
   const onClick = (event) => {
@@ -160,10 +281,7 @@ function enablePicker() {
 
     chrome.runtime.sendMessage({
       type: "SELECTOR_PICKED",
-      payload: {
-        selector,
-        text
-      }
+      payload: { selector, text }
     }).catch(() => {});
   };
 
@@ -176,6 +294,7 @@ function enablePicker() {
   };
 }
 
+// ─── Message handler ───
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) return;
 
@@ -192,24 +311,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "CANCEL_TASK") {
-    clearTaskTimer();
+    clearAllTimers();
     disablePicker();
     sendResponse({ ok: true });
     return;
   }
 
   if (message.type === "RUN_NOW") {
-    void tryClickWithRetry(message.payload.selector, "手动测试");
+    void executeClick(message.payload.selector, "手动测试");
     sendResponse({ ok: true });
   }
 });
 
+// ─── Storage change listener ───
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (!changes[STORAGE_KEY]) return;
-  scheduleTask(changes[STORAGE_KEY].newValue);
+  const task = changes[STORAGE_KEY].newValue;
+  if (task?.armed) {
+    scheduleTask(task);
+  }
 });
 
+// ─── Boot: restore task on page load ───
 async function bootTaskOnPageLoad() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const task = result[STORAGE_KEY];
@@ -217,4 +341,3 @@ async function bootTaskOnPageLoad() {
 }
 
 void bootTaskOnPageLoad();
-
