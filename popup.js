@@ -1,64 +1,180 @@
 const STORAGE_KEY = "autoSubmitTask";
 
+// ─── DOM refs ───
 const selectorInput = document.getElementById("selectorInput");
 const timeInput = document.getElementById("timeInput");
+const msInput = document.getElementById("msInput");
 const pickedHint = document.getElementById("pickedHint");
 const statusText = document.getElementById("statusText");
 const pickBtn = document.getElementById("pickBtn");
 const testBtn = document.getElementById("testBtn");
 const armBtn = document.getElementById("armBtn");
 const cancelBtn = document.getElementById("cancelBtn");
+const countdownCard = document.getElementById("countdownCard");
+const cdH = document.getElementById("cdH");
+const cdM = document.getElementById("cdM");
+const cdS = document.getElementById("cdS");
+const cdMS = document.getElementById("cdMS");
+const countdownStatus = document.getElementById("countdownStatus");
+const currentTimeEl = document.getElementById("currentTime");
 
+// ─── Flatpickr setup ───
+let fp = null;
+function initFlatpickr() {
+  fp = flatpickr(timeInput, {
+    enableTime: true,
+    time_24hr: true,
+    enableSeconds: true,
+    dateFormat: "Y-m-d H:i:S",
+    locale: "zh",
+    theme: "dark",
+    allowInput: true,
+    disableMobile: true,
+    onChange(selectedDates) {
+      // sync milliseconds from msInput
+    }
+  });
+}
+
+// ─── Helpers ───
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
 
-function formatDateTimeForInput(timestamp) {
-  if (!timestamp) return "";
-  const date = new Date(timestamp);
-  const pad = (n, size = 2) => String(n).padStart(size, "0");
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    `${pad(date.getMilliseconds(), 3)}`
-  );
-}
-
-function parseInputTimeToTimestamp(value) {
-  if (!value) return NaN;
-  const date = new Date(value);
+function getSelectedTimestamp() {
+  if (!fp || !fp.selectedDates || fp.selectedDates.length === 0) return NaN;
+  const date = new Date(fp.selectedDates[0]);
+  const ms = parseInt(msInput.value, 10) || 0;
+  date.setMilliseconds(Math.max(0, Math.min(999, ms)));
   return date.getTime();
 }
 
+function setPickerFromTimestamp(ts) {
+  if (!ts || !Number.isFinite(ts)) return;
+  const d = new Date(ts);
+  if (fp) fp.setDate(d, true);
+  msInput.value = d.getMilliseconds();
+}
+
+const pad = (n, size = 2) => String(n).padStart(size, "0");
+
+// ─── Status rendering ───
 function renderStatus(task) {
+  statusText.classList.remove("armed", "idle", "done", "error");
+
   if (!task || !task.armed) {
-    statusText.textContent = "状态：未启动";
+    const result = task?.lastResult || "";
+    if (result.includes("成功")) {
+      statusText.textContent = `状态：${result}`;
+      statusText.classList.add("done");
+    } else if (result.includes("失败") || result.includes("取消")) {
+      statusText.textContent = `状态：${result}`;
+      statusText.classList.add("error");
+    } else {
+      statusText.textContent = "状态：未启动";
+      statusText.classList.add("idle");
+    }
     return;
   }
 
   const triggerAt = new Date(task.triggerAt);
-  const result = task.lastResult ? `，最近结果：${task.lastResult}` : "";
-  statusText.textContent = `状态：已启动，执行时间 ${triggerAt.toLocaleString()}${result}`;
+  const timeStr = `${triggerAt.toLocaleDateString()} ${pad(triggerAt.getHours())}:${pad(triggerAt.getMinutes())}:${pad(triggerAt.getSeconds())}.${pad(triggerAt.getMilliseconds(), 3)}`;
+  statusText.textContent = `状态：已启动 → ${timeStr}`;
+  statusText.classList.add("armed");
 }
 
+// ─── Countdown timer ───
+let countdownRaf = null;
+let targetTimestamp = null;
+
+function startCountdown(triggerAt) {
+  targetTimestamp = triggerAt;
+  countdownCard.style.display = "";
+  countdownCard.classList.add("armed");
+  countdownCard.classList.remove("expired");
+
+  if (countdownRaf) cancelAnimationFrame(countdownRaf);
+  tickCountdown();
+}
+
+function stopCountdown() {
+  if (countdownRaf) {
+    cancelAnimationFrame(countdownRaf);
+    countdownRaf = null;
+  }
+  countdownCard.classList.remove("armed");
+}
+
+function hideCountdown() {
+  stopCountdown();
+  countdownCard.style.display = "none";
+}
+
+function tickCountdown() {
+  const now = Date.now();
+  let diff = targetTimestamp - now;
+
+  if (diff <= 0) {
+    cdH.textContent = "00";
+    cdM.textContent = "00";
+    cdS.textContent = "00";
+    cdMS.textContent = "000";
+    countdownCard.classList.add("expired");
+    countdownCard.classList.remove("armed");
+    countdownStatus.textContent = "⚡ 已到达目标时间，正在执行点击...";
+    return; // stop
+  }
+
+  const h = Math.floor(diff / 3600000);
+  diff %= 3600000;
+  const m = Math.floor(diff / 60000);
+  diff %= 60000;
+  const s = Math.floor(diff / 1000);
+  const ms = diff % 1000;
+
+  cdH.textContent = pad(h);
+  cdM.textContent = pad(m);
+  cdS.textContent = pad(s);
+  cdMS.textContent = pad(ms, 3);
+  countdownStatus.textContent = "🟢 任务运行中...";
+
+  countdownRaf = requestAnimationFrame(tickCountdown);
+}
+
+// ─── Current time display ───
+let currentTimeRaf = null;
+function tickCurrentTime() {
+  const now = new Date();
+  currentTimeEl.textContent =
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
+  currentTimeRaf = requestAnimationFrame(tickCurrentTime);
+}
+tickCurrentTime();
+
+// ─── Load saved task ───
 async function loadTask() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const task = result[STORAGE_KEY];
   if (!task) return;
 
   selectorInput.value = task.selector || "";
-  timeInput.value = formatDateTimeForInput(task.triggerAt);
+  setPickerFromTimestamp(task.triggerAt);
   if (task.selector) {
     const textPart = task.pickedText ? `（${task.pickedText}）` : "";
     pickedHint.textContent = `已选择：${task.selector}${textPart}`;
   }
   renderStatus(task);
+
+  if (task.armed && task.triggerAt > Date.now()) {
+    startCountdown(task.triggerAt);
+  }
 }
 
+// ─── Arm task ───
 async function saveAndArmTask() {
   const selector = selectorInput.value.trim();
-  const triggerAt = parseInputTimeToTimestamp(timeInput.value);
+  const triggerAt = getSelectedTimestamp();
 
   if (!selector) {
     alert("请先设置提交按钮选择器。");
@@ -82,12 +198,14 @@ async function saveAndArmTask() {
 
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
   renderStatus(task);
+  startCountdown(triggerAt);
 
   const tab = await getActiveTab();
   if (!tab?.id) return;
   await chrome.tabs.sendMessage(tab.id, { type: "ARM_TASK", payload: task }).catch(() => {});
 }
 
+// ─── Cancel task ───
 async function cancelTask() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const task = result[STORAGE_KEY] || {};
@@ -96,12 +214,14 @@ async function cancelTask() {
 
   await chrome.storage.local.set({ [STORAGE_KEY]: task });
   renderStatus(task);
+  hideCountdown();
 
   const tab = await getActiveTab();
   if (!tab?.id) return;
   await chrome.tabs.sendMessage(tab.id, { type: "CANCEL_TASK" }).catch(() => {});
 }
 
+// ─── Pick selector ───
 async function requestPickSelector() {
   const tab = await getActiveTab();
   if (!tab?.id) {
@@ -113,11 +233,8 @@ async function requestPickSelector() {
   const canInject = /^https?:\/\/.+\.(taobao|tmall)\.com\//i.test(tab.url || "");
 
   const started = await sendStartPicker().then(() => true).catch(async () => {
-    if (!canInject) {
-      throw new Error("NOT_TAOBAO_PAGE");
-    }
+    if (!canInject) throw new Error("NOT_TAOBAO_PAGE");
 
-    // After extension reload/update, existing tabs may not have content script yet.
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ["content.js"]
@@ -129,15 +246,16 @@ async function requestPickSelector() {
       alert("当前页面不是淘宝/天猫页面，请切到订单页后再试。");
       return false;
     }
-    alert("当前页脚本注入失败。请刷新订单页后重试。");
+    alert("脚本注入失败，请刷新订单页后重试。");
     return false;
   });
 
   if (started) {
-    pickedHint.textContent = "已进入选择模式：请到页面点击“提交订单”按钮，选完后重新打开插件查看结果。";
+    pickedHint.textContent = '🔍 已进入选择模式：请点击页面上的「提交订单」按钮';
   }
 }
 
+// ─── Test click ───
 async function runTestClickNow() {
   const selector = selectorInput.value.trim();
   if (!selector) {
@@ -154,18 +272,21 @@ async function runTestClickNow() {
   });
 }
 
+// ─── Event listeners ───
 pickBtn.addEventListener("click", requestPickSelector);
 armBtn.addEventListener("click", saveAndArmTask);
 cancelBtn.addEventListener("click", cancelTask);
 testBtn.addEventListener("click", runTestClickNow);
 
+// Listen for selector picked from content script
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type !== "SELECTOR_PICKED") return;
-
   selectorInput.value = message.payload.selector || "";
-  pickedHint.textContent = `已选择：${message.payload.selector}`;
+  const textPart = message.payload.text ? `（${message.payload.text}）` : "";
+  pickedHint.textContent = `✅ 已选择：${message.payload.selector}${textPart}`;
 });
 
+// Listen for storage changes (e.g. from content script writing results)
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes[STORAGE_KEY]) return;
   const task = changes[STORAGE_KEY].newValue;
@@ -177,7 +298,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     pickedHint.textContent = `已选择：${task.selector}${textPart}`;
   }
   renderStatus(task);
+
+  // Update countdown state
+  if (task.armed && task.triggerAt > Date.now()) {
+    startCountdown(task.triggerAt);
+  } else {
+    if (!task.armed) hideCountdown();
+  }
 });
 
+// ─── Init ───
+initFlatpickr();
 loadTask();
-
