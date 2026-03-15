@@ -26,6 +26,7 @@ const togglePaymentCheck = document.getElementById("togglePaymentCheck");
 const watchDomCheck = document.getElementById("watchDomCheck");
 const paymentSelectorInput = document.getElementById("paymentSelectorInput");
 const pickPaymentBtn = document.getElementById("pickPaymentBtn");
+const testPaymentBtn = document.getElementById("testPaymentBtn");
 const paymentPickedHint = document.getElementById("paymentPickedHint");
 
 // ─── Flatpickr setup ───
@@ -336,7 +337,7 @@ async function requestPickPaymentSelector() {
   }
 }
 
-// ─── Test click ───
+// ─── Test click (submit button) ───
 async function runTestClickNow() {
   const selector = selectorInput.value.trim();
   if (!selector) {
@@ -353,12 +354,30 @@ async function runTestClickNow() {
   });
 }
 
+// ─── Test toggle (payment checkbox) ───
+async function runTestPaymentToggle() {
+  const paymentSelector = paymentSelectorInput.value.trim();
+  if (!paymentSelector) {
+    alert("请先选择支付宝复选框元素。");
+    return;
+  }
+  const tab = await getActiveTab();
+  if (!tab?.id) return;
+  await chrome.tabs.sendMessage(tab.id, {
+    type: "TEST_PAYMENT_TOGGLE",
+    payload: { paymentSelector }
+  }).catch(() => {
+    alert("执行失败，请确认当前页面属于淘宝/天猫订单页。");
+  });
+}
+
 // ─── Event listeners ───
 pickBtn.addEventListener("click", requestPickSelector);
 armBtn.addEventListener("click", saveAndArmTask);
 cancelBtn.addEventListener("click", cancelTask);
 testBtn.addEventListener("click", runTestClickNow);
 pickPaymentBtn.addEventListener("click", requestPickPaymentSelector);
+testPaymentBtn.addEventListener("click", runTestPaymentToggle);
 
 // Listen for selector picked from content script
 chrome.runtime.onMessage.addListener((message) => {

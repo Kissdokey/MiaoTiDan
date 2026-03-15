@@ -573,6 +573,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const forceEnable = flashSale?.enabled && flashSale?.forceEnable;
     void executeDirectClick(selector, forceEnable);
     sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "TEST_PAYMENT_TOGGLE") {
+    const { paymentSelector } = message.payload;
+    const el = document.querySelector(paymentSelector);
+    if (!el) {
+      console.warn("[MiaoTiDan] 测试切换：未找到支付宝复选框元素");
+      sendResponse({ ok: false, error: "未找到元素" });
+      return;
+    }
+    console.log("[MiaoTiDan] 测试切换：第一次点击（取消勾选）");
+    syntheticToggle(el);
+    setTimeout(() => {
+      const el2 = document.querySelector(paymentSelector) || el;
+      console.log("[MiaoTiDan] 测试切换：第二次点击（重新勾选）");
+      syntheticToggle(el2);
+    }, 80);
+    sendResponse({ ok: true });
+    return;
   }
 });
 
